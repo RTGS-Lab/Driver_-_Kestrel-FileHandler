@@ -1276,7 +1276,7 @@ bool KestrelFileHandler::tryBackhaul()
 int KestrelFileHandler::sleep()
 {
     switch(powerSaveMode) {
-        case PowerSaveModes::PERFROMANCE:
+        case PowerSaveModes::PERFORMANCE:
             return 0; //Nothing to do for performance mode 
             break; 
         case PowerSaveModes::BALANCED:
@@ -1305,7 +1305,7 @@ int KestrelFileHandler::sleep()
 int KestrelFileHandler::wake()
 {
     switch(powerSaveMode) {
-        case PowerSaveModes::PERFROMANCE:
+        case PowerSaveModes::PERFORMANCE:
             return 0; //Nothing to do for performance mode 
             break; 
         case PowerSaveModes::LOW_POWER:
