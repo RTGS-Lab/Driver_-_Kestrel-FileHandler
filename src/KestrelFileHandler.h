@@ -8,6 +8,7 @@
 #include <MB85RC256V-FRAM-RK.h>
 #include <Kestrel.h>
 #include <Sensor.h>
+#include <string>
 
 namespace DestCodes{
     constexpr uint8_t None = 0x00;
@@ -84,6 +85,12 @@ class KestrelFileHandler: public Sensor
         * @details If file does not exist, data is written and a warning is sent 
         */    
         bool writeToSD(String data, String path);
+        /**
+        * @brief Read a data string from SD card
+        * * @param[in] path: String which describes the file path where the data should be read from 
+        * @details empty string is returned if file path is not found
+        */    
+        std::string readFromSD(String path);
         /**
         * @brief Write the given data string to Particle cloud
         * * @param[in] data: String of data to be written to SD card

@@ -193,6 +193,78 @@ bool KestrelFileHandler::writeToSD(String data, String path)
     
 }
 
+std::string KestrelFileHandler::readFromSD(String path)
+{
+    char dataBuffer[1024] = {""};
+    logger.enableSD(true); //Turn on power to SD card
+    if(!logger.sdInserted()) {
+        throwError(SD_NOT_INSERTED);
+    }
+    else { //Only talk to SD if it is inserted 
+        WITH_LOCK(SPI){
+        if (!sd.begin(chipSelect, SD_SCK_MHZ(20))) { //Initialize SD card, assume power has been cycled since last time
+            logger.enableSD(false);
+            delay(100);
+            logger.enableSD(true);
+            delay(100);
+            if(!sd.begin(chipSelect, SD_SCK_MHZ(10))) {
+                Serial.println("SD Fail on retry"); //DEBUG!
+                throwError(SD_INIT_FAIL | 0x100);
+                // sd.initErrorHalt(); //DEBUG!??
+            }
+            else {
+                //THROW ERROR - device needed to restart SD to get it to work
+            }
+            
+        }
+
+        if (!sdFile.open(path, O_RDONLY)) { //Try to open the specified file, for read only
+            // sd.errorHalt("opening test.txt for write failed");
+            sdFile.close();
+            throwError(SD_ACCESS_FAIL);
+            // return false; //Return fail if not able to write
+            //FIX! ThrowError!
+        }
+
+        int fileSize = sdFile.fileSize();
+        if(fileSize == 0) {
+            Serial.println("File Empty"); //DEBUG!
+            throwError(EXPECTED_FILE_MISSING);
+            return "";
+        }
+        else if(fileSize > 1024) {
+            Serial.println("File too large for buffer"); //DEBUG!
+            throwError(FILE_LIMIT_EXCEEDED);
+            return "";
+        }
+        else if(fileSize == -1) {
+            Serial.println("File not found"); //DEBUG!
+            throwError(SD_FILE_NOT_FOUND);
+            return "";
+        }
+        else if(fileSize == -2) {
+            Serial.println("File not open"); //DEBUG!
+            throwError(SD_ACCESS_FAIL);
+            return "";
+        }
+
+        else {
+            for(int i = 0; i < fileSize; i++) {
+                if(sdFile.available()) {
+                    dataBuffer[i] = sdFile.read();
+                    Serial.print(dataBuffer[i]); //DEBUG! Print out data as it is read
+                }
+            }
+        }
+        sdFile.close(); //Regardless of access, close file when done 
+        }
+    }
+        // delay(10);
+    logger.enableSD(false); //Turn SD back off
+    std::string rv(dataBuffer);
+    return rv; //If get to this point, should have been success
+}
+
 bool KestrelFileHandler::writeToParticle(String data, String path)
 {
     if(!Particle.connected()) {
