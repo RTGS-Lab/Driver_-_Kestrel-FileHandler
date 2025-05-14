@@ -154,6 +154,7 @@ bool KestrelFileHandler::writeToSD(String data, String path)
     logger.enableSD(true); //Turn on power to SD card
     if(!logger.sdInserted()) {
         throwError(SD_NOT_INSERTED);
+        Serial.println("SD_NOT_INSERTED"); //DEBUG!
     }
     else { //Only talk to SD if it is inserted 
         WITH_LOCK(SPI){
@@ -177,10 +178,12 @@ bool KestrelFileHandler::writeToSD(String data, String path)
             // sd.errorHalt("opening test.txt for write failed");
             sdFile.close();
             throwError(SD_ACCESS_FAIL);
+            Serial.println("SD_ACCESS_FAIL"); //DEBUG!
             // return false; //Return fail if not able to write
             //FIX! ThrowError!
         }
         else {
+            Serial.println("Writing to SD"); //DEBUG!
             sdFile.println(data); //Append data to end
         }
         sdFile.close(); //Regardless of access, close file when done 
