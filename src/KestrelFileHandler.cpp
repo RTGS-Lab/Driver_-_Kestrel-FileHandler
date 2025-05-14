@@ -268,6 +268,17 @@ std::string KestrelFileHandler::readFromSD(String path)
     return rv; //If get to this point, should have been success
 }
 
+bool KestrelFileHandler::clearFileFromSD(String path) {
+    logger.enableSD(true); //Turn on power to SD card
+    if(!logger.sdInserted()) {
+        throwError(SD_NOT_INSERTED);
+        Serial.println("SD_NOT_INSERTED"); //DEBUG!
+    }
+    
+    sd.remove(path);
+    return writeToSD("", path); //Clear file by writing empty string to it
+}
+
 bool KestrelFileHandler::writeToParticle(String data, String path)
 {
     if(!Particle.connected()) {
