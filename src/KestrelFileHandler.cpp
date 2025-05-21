@@ -276,6 +276,7 @@ bool KestrelFileHandler::clearFileFromSD(String path) {
     }
     
     sd.remove(path);
+    logger.enableSD(false); //Turn SD back off
     return writeToSD("", path); //Clear file by writing empty string to it
 }
 
