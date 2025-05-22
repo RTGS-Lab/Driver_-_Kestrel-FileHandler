@@ -274,8 +274,29 @@ bool KestrelFileHandler::clearFileFromSD(String path) {
         throwError(SD_NOT_INSERTED);
         Serial.println("SD_NOT_INSERTED"); //DEBUG!
     }
-    
-    sd.remove(path);
+    else { 
+        WITH_LOCK(SPI){
+            if (!sd.begin(chipSelect, SD_SCK_MHZ(20))) { //Initialize SD card, assume power has been cycled since last time
+                logger.enableSD(false);
+                delay(100);
+                logger.enableSD(true);
+                delay(100);
+                if(!sd.begin(chipSelect, SD_SCK_MHZ(10))) {
+                    Serial.println("SD Fail on retry"); //DEBUG!
+                    throwError(SD_INIT_FAIL | 0x100);
+                    // sd.initErrorHalt(); //DEBUG!??
+                }
+                else {
+                    //THROW ERROR - device needed to restart SD to get it to work
+                }
+                
+            }
+    Serial.print("File exists: ");
+    Serial.println(sd.exists(path)); //DEBUG!
+    Serial.print("File removed successfully: ");
+    Serial.println(sd.remove(path)); //DEBUG!
+        }
+    }
     logger.enableSD(false); //Turn SD back off
     return writeToSD("", path); //Clear file by writing empty string to it
 }
