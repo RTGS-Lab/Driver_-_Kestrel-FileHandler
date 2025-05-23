@@ -92,11 +92,11 @@ class KestrelFileHandler: public Sensor
         */    
         std::string readFromSD(String path);
         /**
-        * @brief Clear a file from the SD card
-        * * @param[in] path: String which describes the file path that should be cleared
-        * @details returns true if the file was cleared false otherwise
+        * @brief Remove a file from the SD card
+        * * @param[in] path: String which describes the file path that should be removed
+        * @details returns true if the file was removed false otherwise
         */    
-        bool clearFileFromSD(String path);
+        bool removeFileFromSD(String path);
         /**
         * @brief Write the given data string to Particle cloud
         * * @param[in] data: String of data to be written to SD card

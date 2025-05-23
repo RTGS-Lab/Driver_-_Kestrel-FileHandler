@@ -268,7 +268,8 @@ std::string KestrelFileHandler::readFromSD(String path)
     return rv; //If get to this point, should have been success
 }
 
-bool KestrelFileHandler::clearFileFromSD(String path) {
+bool KestrelFileHandler::removeFileFromSD(String path) {
+    bool fileRemoved = false; 
     logger.enableSD(true); //Turn on power to SD card
     if(!logger.sdInserted()) {
         throwError(SD_NOT_INSERTED);
@@ -294,11 +295,12 @@ bool KestrelFileHandler::clearFileFromSD(String path) {
     Serial.print("File exists: ");
     Serial.println(sd.exists(path)); //DEBUG!
     Serial.print("File removed successfully: ");
-    Serial.println(sd.remove(path)); //DEBUG!
+    fileRemoved = sd.remove(path); //Try to remove the file
+    Serial.println(fileRemoved); //DEBUG!
         }
     }
     logger.enableSD(false); //Turn SD back off
-    return writeToSD("", path); //Clear file by writing empty string to it
+    return fileRemoved;
 }
 
 bool KestrelFileHandler::writeToParticle(String data, String path)
