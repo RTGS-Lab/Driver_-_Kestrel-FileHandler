@@ -1465,3 +1465,708 @@ if(source != TimeSource::NONE) { //Only write time back if time is legit
 }
 
 void KestrelFileHandler::dateTimeSD_Glob(uint16_t* date, uint16_t* time) {selfPointer->dateTimeSD(date, time);}
+
+uint32_t KestrelFileHandler::calculateCRC32(const uint8_t* data, size_t length) {
+    uint32_t crc = 0xFFFFFFFF;
+    
+    for (size_t i = 0; i < length; i++) {
+        crc ^= data[i];
+        for (int j = 0; j < 8; j++) {
+            if (crc & 1) {
+                crc = (crc >> 1) ^ 0xEDB88320;
+            } else {
+                crc >>= 1;
+            }
+        }
+    }
+    
+    return crc ^ 0xFFFFFFFF;
+}
+
+bool KestrelFileHandler::waitForAck(int chunkNum, unsigned long timeoutMs) {
+    unsigned long startTime = millis();
+    String response = "";
+    
+    while ((millis() - startTime) < timeoutMs) {
+        if (Serial.available() > 0) {
+            char c = Serial.read();
+            if (c == '\n' || c == '\r') {
+                response.trim();
+                if (response.startsWith("ACK:")) {
+                    int receivedChunk = response.substring(4).toInt();
+                    return (receivedChunk == chunkNum);
+                } else if (response.startsWith("NAK:")) {
+                    return false;
+                }
+                response = "";
+            } else {
+                response += c;
+            }
+        }
+        delay(1);
+    }
+    return false; // Timeout
+}
+
+bool KestrelFileHandler::dumpSDOverSerial(uint32_t recentCount) {
+    logger.enableSD(true);
+    
+    if (!logger.sdInserted()) {
+        Serial.println("ERROR: SD card not inserted");
+        throwError(SD_NOT_INSERTED);
+        return false;
+    }
+    
+    WITH_LOCK(SPI) {
+        if (!sd.begin(chipSelect, SD_SCK_MHZ(20))) {
+            Serial.println("ERROR: Failed to initialize SD card");
+            throwError(SD_INIT_FAIL);
+            logger.enableSD(false);
+            return false;
+        }
+        
+        Serial.println("SD_DUMP_START");
+        
+        if (recentCount > 0) {
+            Serial.print("RECENT_COUNT:");
+            Serial.println(recentCount);
+            
+            // Find the maximum file numbers for each type
+            findMaxFileNumbers("/", maxDataNum, maxErrorNum, maxDiagNum, maxMetaNum);
+            currentRecentCount = recentCount;
+            
+            Serial.print("MAX_NUMS: Data=");
+            Serial.print(maxDataNum);
+            Serial.print(", Error=");
+            Serial.print(maxErrorNum);
+            Serial.print(", Diag=");
+            Serial.print(maxDiagNum);
+            Serial.print(", Meta=");
+            Serial.println(maxMetaNum);
+        } else {
+            // Reset filtering state
+            maxDataNum = maxErrorNum = maxDiagNum = maxMetaNum = -1;
+            currentRecentCount = 0;
+        }
+        
+        const size_t chunkSize = 512;
+        uint8_t buffer[chunkSize];
+        int totalFiles = 0;
+        int fileCount = 0;
+        
+        // First pass: count files (all or recent only)
+        if (recentCount > 0) {
+            totalFiles = countRecentFiles("/", recentCount);
+        } else {
+            totalFiles = countAllFiles("/");
+        }
+        
+        Serial.print("TOTAL_FILES:");
+        Serial.println(totalFiles);
+        
+        // Second pass: dump files recursively
+        bool success = dumpDirectoryRecursive("/", fileCount, totalFiles, chunkSize, buffer, recentCount);
+        
+        if (!success) {
+            logger.enableSD(false);
+            return false;
+        }
+    }
+    
+    logger.enableSD(false);
+    Serial.println("SD_DUMP_COMPLETE");
+    return true;
+}
+
+int KestrelFileHandler::countAllFiles(const char* dirPath) {
+    int fileCount = 0;
+    File dir;
+    
+    if (!dir.open(dirPath)) {
+        return 0;
+    }
+    
+    File file;
+    while (file.openNext(&dir, O_RDONLY)) {
+        if (file.isDirectory()) {
+            // Get directory name for recursive call
+            char subDirName[64];
+            file.getName(subDirName, sizeof(subDirName));
+            
+            // Build full path
+            String fullPath = String(dirPath);
+            if (!fullPath.endsWith("/")) fullPath += "/";
+            fullPath += subDirName;
+            
+            // Recursively count files in subdirectory
+            fileCount += countAllFiles(fullPath.c_str());
+        } else {
+            // It's a file, count it
+            fileCount++;
+        }
+        file.close();
+    }
+    dir.close();
+    
+    return fileCount;
+}
+
+int KestrelFileHandler::countRecentFiles(const char* dirPath, uint32_t recentCount) {
+    int fileCount = 0;
+    File dir;
+    
+    if (!dir.open(dirPath)) {
+        return 0;
+    }
+    
+    File file;
+    while (file.openNext(&dir, O_RDONLY)) {
+        if (file.isDirectory()) {
+            // Get directory name for recursive call
+            char subDirName[64];
+            file.getName(subDirName, sizeof(subDirName));
+            
+            // Build full path
+            String fullPath = String(dirPath);
+            if (!fullPath.endsWith("/")) fullPath += "/";
+            fullPath += subDirName;
+            
+            // Recursively count files in subdirectory
+            fileCount += countRecentFiles(fullPath.c_str(), recentCount);
+        } else {
+            // Check if file should be included based on numbering
+            char fileName[64];
+            file.getName(fileName, sizeof(fileName));
+            if (shouldIncludeFile(fileName, recentCount)) {
+                fileCount++;
+            }
+        }
+        file.close();
+    }
+    dir.close();
+    
+    return fileCount;
+}
+
+bool KestrelFileHandler::dumpDirectoryRecursive(const char* dirPath, int& fileCount, int totalFiles, size_t chunkSize, uint8_t* buffer, uint32_t recentCount) {
+    File dir;
+    
+    if (!dir.open(dirPath)) {
+        Serial.print("ERROR: Failed to open directory: ");
+        Serial.println(dirPath);
+        return false;
+    }
+    
+    Serial.print("DIR_START:");
+    Serial.println(dirPath);
+    
+    File file;
+    while (file.openNext(&dir, O_RDONLY)) {
+        char itemName[64];
+        file.getName(itemName, sizeof(itemName));
+        
+        // Build full path
+        String fullPath = String(dirPath);
+        if (!fullPath.endsWith("/")) fullPath += "/";
+        fullPath += itemName;
+        
+        if (file.isDirectory()) {
+            file.close();
+            
+            // Recursively process subdirectory
+            if (!dumpDirectoryRecursive(fullPath.c_str(), fileCount, totalFiles, chunkSize, buffer, recentCount)) {
+                dir.close();
+                return false;
+            }
+        } else {
+            // Process file (check if should be included based on numbering)
+            char fileName[64];
+            file.getName(fileName, sizeof(fileName));
+            if (recentCount == 0 || shouldIncludeFile(fileName, recentCount)) {
+                if (!dumpSingleFile(file, fullPath.c_str(), fileCount, totalFiles, chunkSize, buffer, recentCount)) {
+                    file.close();
+                    dir.close();
+                    return false;
+                }
+            }
+            file.close();
+        }
+    }
+    
+    Serial.print("DIR_END:");
+    Serial.println(dirPath);
+    dir.close();
+    return true;
+}
+
+bool KestrelFileHandler::dumpSingleFile(File& file, const char* fullPath, int& fileCount, int totalFiles, size_t chunkSize, uint8_t* buffer, uint32_t recentCount) {
+    uint32_t fileSize = file.fileSize();
+    uint32_t totalChunks = (fileSize + chunkSize - 1) / chunkSize;
+    
+    fileCount++;
+    
+    Serial.print("FILE_START:");
+    Serial.print(fullPath);
+    Serial.print(":");
+    Serial.print(fileSize);
+    Serial.print(":");
+    Serial.print(totalChunks);
+    Serial.print(":");
+    Serial.print(fileCount);
+    Serial.print(":");
+    Serial.println(totalFiles);
+    
+    // Calculate file CRC while reading chunks
+    uint32_t fileCrc = 0xFFFFFFFF;
+    
+    for (uint32_t chunkNum = 1; chunkNum <= totalChunks; chunkNum++) {
+        size_t bytesToRead = min(chunkSize, (size_t)(fileSize - (chunkNum - 1) * chunkSize));
+        size_t bytesRead = file.read(buffer, bytesToRead);
+        
+        if (bytesRead != bytesToRead) {
+            Serial.println("ERROR: Failed to read file chunk");
+            return false;
+        }
+        
+        // Update file CRC
+        for (size_t i = 0; i < bytesRead; i++) {
+            fileCrc ^= buffer[i];
+            for (int j = 0; j < 8; j++) {
+                if (fileCrc & 1) {
+                    fileCrc = (fileCrc >> 1) ^ 0xEDB88320;
+                } else {
+                    fileCrc >>= 1;
+                }
+            }
+        }
+        
+        uint32_t chunkCrc = calculateCRC32(buffer, bytesRead);
+        
+        // Send chunk with retry logic
+        bool ackReceived = false;
+        for (int retries = 0; retries < 3 && !ackReceived; retries++) {
+            Serial.print("CHUNK:");
+            Serial.print(fullPath);
+            Serial.print(":");
+            Serial.print(chunkNum);
+            Serial.print(":");
+            Serial.print(totalChunks);
+            Serial.print(":");
+            Serial.print(bytesRead);
+            Serial.print(":");
+            Serial.print(chunkCrc, HEX);
+            Serial.print(":");
+            
+            // Send data as hex encoding
+            for (size_t i = 0; i < bytesRead; i++) {
+                if (buffer[i] < 16) Serial.print("0");
+                Serial.print(buffer[i], HEX);
+            }
+            Serial.println();
+            
+            ackReceived = waitForAck(chunkNum, 5000);
+            
+            if (!ackReceived && retries < 2) {
+                Serial.print("RETRY_CHUNK:");
+                Serial.println(chunkNum);
+                delay(100);
+            }
+        }
+        
+        if (!ackReceived) {
+            Serial.print("ERROR: Failed to get ACK for chunk ");
+            Serial.println(chunkNum);
+            return false;
+        }
+    }
+    
+    fileCrc ^= 0xFFFFFFFF; // Finalize CRC
+    
+    Serial.print("FILE_END:");
+    Serial.print(fullPath);
+    Serial.print(":");
+    Serial.println(fileCrc, HEX);
+    
+    return true;
+}
+
+int KestrelFileHandler::extractFileNumber(const char* fileName) {
+    // Extract number from files like "data123.json", "error45.json", etc.
+    // Look for the number before the extension
+    String fileStr = String(fileName);
+    
+    // Find the last dot (extension separator)
+    int dotIndex = fileStr.lastIndexOf('.');
+    if (dotIndex == -1) {
+        return -1; // No extension found
+    }
+    
+    // Look for digits before the extension
+    int numberEnd = dotIndex;
+    int numberStart = numberEnd;
+    
+    // Find the start of the number (work backwards from the dot)
+    while (numberStart > 0 && isDigit(fileStr.charAt(numberStart - 1))) {
+        numberStart--;
+    }
+    
+    if (numberStart == numberEnd) {
+        return -1; // No number found
+    }
+    
+    // Extract and convert the number
+    String numberStr = fileStr.substring(numberStart, numberEnd);
+    return numberStr.toInt();
+}
+
+bool KestrelFileHandler::shouldIncludeFile(const char* fileName, uint32_t recentCount) {
+    if (recentCount == 0) {
+        return true; // Include all files
+    }
+    
+    // Extract file number
+    int fileNumber = extractFileNumber(fileName);
+    if (fileNumber == -1) {
+        return true; // Include non-numbered files (like config.json)
+    }
+    
+    // Get file type
+    String fileType = getFileType(fileName);
+    
+    // Check if file should be included based on recent count
+    if (fileType == "data" || fileType == "Data") {
+        if (maxDataNum == -1) return true; // No data files found during scan
+        return fileNumber > (maxDataNum - (int)recentCount);
+    }
+    else if (fileType == "error" || fileType == "Err") {
+        if (maxErrorNum == -1) return true; // No error files found during scan
+        return fileNumber > (maxErrorNum - (int)recentCount);
+    }
+    else if (fileType == "diag" || fileType == "Diag") {
+        if (maxDiagNum == -1) return true; // No diag files found during scan
+        return fileNumber > (maxDiagNum - (int)recentCount);
+    }
+    else if (fileType == "meta" || fileType == "Meta") {
+        if (maxMetaNum == -1) return true; // No meta files found during scan
+        return fileNumber > (maxMetaNum - (int)recentCount);
+    }
+    else {
+        return true; // Include other file types
+    }
+}
+
+String KestrelFileHandler::getFileType(const char* fileName) {
+    String fileStr = String(fileName);
+    
+    // Convert to lowercase for comparison
+    fileStr.toLowerCase();
+    
+    if (fileStr.startsWith("data")) {
+        return "data";
+    }
+    else if (fileStr.startsWith("err")) {
+        return "error";
+    }
+    else if (fileStr.startsWith("diag")) {
+        return "diag";
+    }
+    else if (fileStr.startsWith("meta")) {
+        return "meta";
+    }
+    else {
+        return "other";
+    }
+}
+
+void KestrelFileHandler::findMaxFileNumbers(const char* dirPath, int& maxData, int& maxError, int& maxDiag, int& maxMeta) {
+    maxData = maxError = maxDiag = maxMeta = -1;
+    
+    File dir;
+    if (!dir.open(dirPath)) {
+        return;
+    }
+    
+    File file;
+    while (file.openNext(&dir, O_RDONLY)) {
+        if (file.isDirectory()) {
+            // Get directory name for recursive call
+            char subDirName[64];
+            file.getName(subDirName, sizeof(subDirName));
+            
+            // Build full path
+            String fullPath = String(dirPath);
+            if (!fullPath.endsWith("/")) fullPath += "/";
+            fullPath += subDirName;
+            
+            // Recursively search subdirectories
+            int subMaxData, subMaxError, subMaxDiag, subMaxMeta;
+            findMaxFileNumbers(fullPath.c_str(), subMaxData, subMaxError, subMaxDiag, subMaxMeta);
+            
+            // Update maximums
+            if (subMaxData > maxData) maxData = subMaxData;
+            if (subMaxError > maxError) maxError = subMaxError;
+            if (subMaxDiag > maxDiag) maxDiag = subMaxDiag;
+            if (subMaxMeta > maxMeta) maxMeta = subMaxMeta;
+        } else {
+            // Process file
+            char fileName[64];
+            file.getName(fileName, sizeof(fileName));
+            
+            int fileNumber = extractFileNumber(fileName);
+            if (fileNumber >= 0) {
+                String fileType = getFileType(fileName);
+                
+                if (fileType == "data" && fileNumber > maxData) {
+                    maxData = fileNumber;
+                }
+                else if (fileType == "error" && fileNumber > maxError) {
+                    maxError = fileNumber;
+                }
+                else if (fileType == "diag" && fileNumber > maxDiag) {
+                    maxDiag = fileNumber;
+                }
+                else if (fileType == "meta" && fileNumber > maxMeta) {
+                    maxMeta = fileNumber;
+                }
+            }
+        }
+        file.close();
+    }
+    dir.close();
+}
+
+bool KestrelFileHandler::writeFileOverSerial(const char* filename) {
+    Serial.println("SD_WRITE_START");
+    Serial.flush();
+    
+    // Wait for host to start sending
+    if (!waitForFileWriteAck("SD_WRITE_START", 10000)) {
+        Serial.println("ERROR:Host did not acknowledge write start");
+        return false;
+    }
+    
+    // Send ready signal with filename
+    Serial.print("SD_WRITE_READY:");
+    Serial.println(filename);
+    Serial.flush();
+    
+    // Wait for file info from host
+    unsigned long startTime = millis();
+    String fileInfo = "";
+    
+    while (millis() - startTime < 10000) {
+        if (Serial.available() > 0) {
+            fileInfo = Serial.readStringUntil('\n');
+            fileInfo.trim();
+            if (fileInfo.startsWith("FILE_INFO:")) {
+                break;
+            }
+        }
+        delay(10);
+    }
+    
+    if (!fileInfo.startsWith("FILE_INFO:")) {
+        Serial.println("ERROR:Did not receive file info");
+        return false;
+    }
+    
+    // Parse file info: FILE_INFO:<filename>:<filesize>:<total_chunks>
+    int firstColon = fileInfo.indexOf(':', 10); // Start after "FILE_INFO:"
+    int secondColon = fileInfo.indexOf(':', firstColon + 1);
+    
+    if (firstColon == -1 || secondColon == -1) {
+        Serial.println("ERROR:Invalid file info format");
+        return false;
+    }
+    
+    String receivedFilename = fileInfo.substring(10, firstColon);
+    uint32_t fileSize = fileInfo.substring(firstColon + 1, secondColon).toInt();
+    int totalChunks = fileInfo.substring(secondColon + 1).toInt();
+    
+    // Verify filename matches
+    if (!receivedFilename.equals(filename)) {
+        Serial.println("ERROR:Filename mismatch");
+        return false;
+    }
+    
+    Serial.print("FILE_INFO_ACK:");
+    Serial.print(fileSize);
+    Serial.print(":");
+    Serial.println(totalChunks);
+    Serial.flush();
+    
+    // Ensure SD card is accessible (avoid re-initialization if already working)
+    // First try to access SD without reinitializing
+    bool needsInit = true;
+    File testFile = sd.open("/", FILE_READ);
+    if (testFile) {
+        testFile.close();
+        needsInit = false;  // SD is already working
+    }
+    
+    if (needsInit && !sd.begin(chipSelect)) {
+        Serial.println("ERROR:SD card initialization failed");
+        return false;
+    }
+    
+    // Create file path in root directory
+    String filePath = "/" + String(filename);
+    if (!sdFile.open(filePath.c_str(), O_RDWR | O_CREAT | O_TRUNC)) {
+        Serial.println("ERROR:Failed to create file on SD card");
+        return false;
+    }
+    
+    // Buffer for receiving chunks
+    const size_t chunkSize = 512;
+    uint8_t buffer[chunkSize];
+    uint32_t bytesReceived = 0;
+    int chunksReceived = 0;
+    
+    Serial.println("READY_FOR_CHUNKS");
+    Serial.flush();
+    
+    // Receive file chunks
+    for (int chunkNum = 1; chunkNum <= totalChunks; chunkNum++) {
+        // Wait for chunk
+        startTime = millis();
+        String chunkLine = "";
+        
+        while (millis() - startTime < 30000) { // 30 second timeout per chunk
+            if (Serial.available() > 0) {
+                chunkLine = Serial.readStringUntil('\n');
+                chunkLine.trim();
+                if (chunkLine.startsWith("CHUNK:")) {
+                    break;
+                }
+            }
+            delay(1);
+        }
+        
+        if (!chunkLine.startsWith("CHUNK:")) {
+            Serial.print("ERROR:Timeout waiting for chunk ");
+            Serial.println(chunkNum);
+            sdFile.close();
+            return false;
+        }
+        
+        // Parse chunk: CHUNK:<filename>:<chunk_num>:<total_chunks>:<length>:<crc32>:<hex_data>
+        int colonPos[6];
+        int colonCount = 0;
+        
+        for (int i = 0; i < chunkLine.length() && colonCount < 6; i++) {
+            if (chunkLine.charAt(i) == ':') {
+                colonPos[colonCount++] = i;
+            }
+        }
+        
+        if (colonCount < 6) {
+            Serial.print("ERROR:Invalid chunk format for chunk ");
+            Serial.println(chunkNum);
+            continue;
+        }
+        
+        int receivedChunkNum = chunkLine.substring(colonPos[1] + 1, colonPos[2]).toInt();
+        int chunkLength = chunkLine.substring(colonPos[3] + 1, colonPos[4]).toInt();
+        uint32_t expectedCrc = strtoul(chunkLine.substring(colonPos[4] + 1, colonPos[5]).c_str(), NULL, 16);
+        String hexData = chunkLine.substring(colonPos[5] + 1);
+        
+        if (receivedChunkNum != chunkNum) {
+            Serial.print("ERROR:Chunk number mismatch, expected ");
+            Serial.print(chunkNum);
+            Serial.print(" got ");
+            Serial.println(receivedChunkNum);
+            continue;
+        }
+        
+        // Convert hex to bytes
+        if (hexData.length() != chunkLength * 2) {
+            Serial.print("ERROR:Hex data length mismatch for chunk ");
+            Serial.println(chunkNum);
+            continue;
+        }
+        
+        for (int i = 0; i < chunkLength && i < chunkSize; i++) {
+            String hexByte = hexData.substring(i * 2, i * 2 + 2);
+            buffer[i] = (uint8_t)strtoul(hexByte.c_str(), NULL, 16);
+        }
+        
+        // Verify CRC
+        uint32_t calculatedCrc = calculateCRC32(buffer, chunkLength);
+        if (calculatedCrc != expectedCrc) {
+            Serial.print("NAK:");
+            Serial.print(chunkNum);
+            Serial.println(":CRC_MISMATCH");
+            Serial.flush();
+            continue; // Wait for retransmission
+        }
+        
+        // Write chunk to file
+        if (sdFile.write(buffer, chunkLength) != chunkLength) {
+            Serial.print("ERROR:Failed to write chunk ");
+            Serial.print(chunkNum);
+            Serial.println(" to SD card");
+            sdFile.close();
+            return false;
+        }
+        
+        bytesReceived += chunkLength;
+        chunksReceived++;
+        
+        // Send ACK
+        Serial.print("ACK:");
+        Serial.println(chunkNum);
+        Serial.flush();
+        
+        // Progress update
+        if (chunkNum % 10 == 0 || chunkNum == totalChunks) {
+            Serial.print("PROGRESS:");
+            Serial.print(chunkNum);
+            Serial.print("/");
+            Serial.println(totalChunks);
+            Serial.flush();
+        }
+    }
+    
+    // Close file and sync to SD card
+    sdFile.sync();
+    sdFile.close();
+    
+    // Verify file was written correctly
+    if (bytesReceived != fileSize) {
+        Serial.print("ERROR:File size mismatch, expected ");
+        Serial.print(fileSize);
+        Serial.print(" got ");
+        Serial.println(bytesReceived);
+        return false;
+    }
+    
+    Serial.print("SD_WRITE_COMPLETE:");
+    Serial.print(filename);
+    Serial.print(":");
+    Serial.print(bytesReceived);
+    Serial.println(" bytes");
+    Serial.flush();
+    
+    return true;
+}
+
+bool KestrelFileHandler::waitForFileWriteAck(const char* operation, unsigned long timeoutMs) {
+    unsigned long startTime = millis();
+    
+    while (millis() - startTime < timeoutMs) {
+        if (Serial.available() > 0) {
+            String response = Serial.readStringUntil('\n');
+            response.trim();
+            
+            if (response.equals("ACK")) {
+                return true;
+            }
+            else if (response.startsWith("NAK")) {
+                return false;
+            }
+        }
+        delay(1);
+    }
+    
+    return false; // Timeout
+}

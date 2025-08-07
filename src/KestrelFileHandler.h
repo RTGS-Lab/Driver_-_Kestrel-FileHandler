@@ -160,6 +160,20 @@ class KestrelFileHandler: public Sensor
         * @return Status of wake attempt
         */  
         int wake();
+        /**
+        * @brief Dumps all files on SD card over serial with CRC verification
+        * @details Transfers all files on SD card via serial communication with chunk-based protocol and CRC32 verification
+        * @param recentCount Only dump the most recent N files of each type (0 = all files)
+        * @return Status of dump operation
+        */  
+        bool dumpSDOverSerial(uint32_t recentCount = 0);
+        /**
+        * @brief Writes a file to SD card root directory over serial with CRC verification
+        * @details Receives a file via serial communication with chunk-based protocol and CRC32 verification
+        * @param filename Name of file to write to SD card root directory
+        * @return Status of write operation
+        */  
+        bool writeFileOverSerial(const char* filename);
 
     
         // String getMetadata();
@@ -194,7 +208,26 @@ class KestrelFileHandler: public Sensor
         bool dumpToSD();
         bool backhaulUnsentLogs();
         long getStackPointer();
+        uint32_t calculateCRC32(const uint8_t* data, size_t length);
+        bool waitForAck(int chunkNum, unsigned long timeoutMs = 5000);
+        int countAllFiles(const char* dirPath);
+        int countRecentFiles(const char* dirPath, uint32_t recentCount);
+        bool dumpDirectoryRecursive(const char* dirPath, int& fileCount, int totalFiles, size_t chunkSize, uint8_t* buffer, uint32_t recentCount = 0);
+        bool dumpSingleFile(File& file, const char* fullPath, int& fileCount, int totalFiles, size_t chunkSize, uint8_t* buffer, uint32_t recentCount = 0);
+        bool shouldIncludeFile(const char* fileName, uint32_t recentCount);
+        int extractFileNumber(const char* fileName);
+        void findMaxFileNumbers(const char* dirPath, int& maxData, int& maxError, int& maxDiag, int& maxMeta);
+        String getFileType(const char* fileName);
+        bool receiveFileChunk(uint8_t* buffer, size_t chunkSize, uint32_t expectedCrc);
+        bool waitForFileWriteAck(const char* operation, unsigned long timeoutMs = 10000);
         const uint8_t chipSelect = SS;
+
+        // File filtering state variables
+        int maxDataNum = -1;
+        int maxErrorNum = -1;
+        int maxDiagNum = -1;
+        int maxMetaNum = -1;
+        uint32_t currentRecentCount = 0;
 
 
 };
