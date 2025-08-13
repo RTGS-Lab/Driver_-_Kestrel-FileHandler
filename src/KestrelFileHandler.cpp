@@ -1995,32 +1995,19 @@ bool KestrelFileHandler::writeFileOverSerial(const char* filename) {
     Serial.println(totalChunks);
     Serial.flush();
     
-    // Ensure SD card is accessible (avoid re-initialization if already working)
-    // First try to access SD without reinitializing
-    bool needsInit = true;
-    File testFile = sd.open("/", FILE_READ);
-    if (testFile) {
-        testFile.close();
-        needsInit = false;  // SD is already working
-    }
-    
-    if (needsInit && !sd.begin(chipSelect)) {
-        Serial.println("ERROR:SD card initialization failed");
-        return false;
-    }
-    
-    // Create file path in root directory
-    String filePath = "/" + String(filename);
-    if (!sdFile.open(filePath.c_str(), O_RDWR | O_CREAT | O_TRUNC)) {
-        Serial.println("ERROR:Failed to create file on SD card");
-        return false;
-    }
+    // Remove existing file if it exists to ensure clean slate
+    String filePath = String(filename);
+    removeFileFromSD(filePath); // Don't check return value as file may not exist
     
     // Buffer for receiving chunks
     const size_t chunkSize = 512;
     uint8_t buffer[chunkSize];
     uint32_t bytesReceived = 0;
     int chunksReceived = 0;
+    
+    // String to accumulate all file data
+    String fileData = "";
+    fileData.reserve(fileSize); // Reserve space for efficiency
     
     Serial.println("READY_FOR_CHUNKS");
     Serial.flush();
@@ -2100,13 +2087,9 @@ bool KestrelFileHandler::writeFileOverSerial(const char* filename) {
             continue; // Wait for retransmission
         }
         
-        // Write chunk to file
-        if (sdFile.write(buffer, chunkLength) != chunkLength) {
-            Serial.print("ERROR:Failed to write chunk ");
-            Serial.print(chunkNum);
-            Serial.println(" to SD card");
-            sdFile.close();
-            return false;
+        // Append chunk data to file data string
+        for (int i = 0; i < chunkLength; i++) {
+            fileData += (char)buffer[i];
         }
         
         bytesReceived += chunkLength;
@@ -2127,9 +2110,11 @@ bool KestrelFileHandler::writeFileOverSerial(const char* filename) {
         }
     }
     
-    // Close file and sync to SD card
-    sdFile.sync();
-    sdFile.close();
+    // Write all accumulated data to SD card using writeToSD
+    if (!writeToSD(fileData, filePath)) {
+        Serial.println("ERROR:Failed to write file to SD card");
+        return false;
+    }
     
     // Verify file was written correctly
     if (bytesReceived != fileSize) {
