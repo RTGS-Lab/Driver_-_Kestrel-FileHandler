@@ -160,9 +160,9 @@ bool KestrelFileHandler::writeToSD(String data, String path)
         WITH_LOCK(SPI){
         if (!sd.begin(chipSelect, SD_SCK_MHZ(20))) { //Initialize SD card, assume power has been cycled since last time
             logger.enableSD(false);
-            delay(100);
+            delay(300);
             logger.enableSD(true);
-            delay(100);
+            delay(300);
             if(!sd.begin(chipSelect, SD_SCK_MHZ(10))) {
                 Serial.println("SD Fail on retry"); //DEBUG!
                 throwError(SD_INIT_FAIL | 0x100);
@@ -185,6 +185,7 @@ bool KestrelFileHandler::writeToSD(String data, String path)
         else {
             Serial.println("Writing to SD"); //DEBUG!
             sdFile.println(data); //Append data to end
+            sdFile.sync(); //Sync to SD card to make sure data is written
         }
         sdFile.close(); //Regardless of access, close file when done 
         }
@@ -207,9 +208,9 @@ std::string KestrelFileHandler::readFromSD(String path)
         WITH_LOCK(SPI){
         if (!sd.begin(chipSelect, SD_SCK_MHZ(20))) { //Initialize SD card, assume power has been cycled since last time
             logger.enableSD(false);
-            delay(100);
+            delay(300);
             logger.enableSD(true);
-            delay(100);
+            delay(300);
             if(!sd.begin(chipSelect, SD_SCK_MHZ(10))) {
                 Serial.println("SD Fail on retry"); //DEBUG!
                 throwError(SD_INIT_FAIL | 0x100);
@@ -233,22 +234,18 @@ std::string KestrelFileHandler::readFromSD(String path)
         if(fileSize == 0) {
             Serial.println("File Empty"); //DEBUG!
             throwError(EXPECTED_FILE_MISSING);
-            return "";
         }
         else if(fileSize > 1024) {
             Serial.println("File too large for buffer"); //DEBUG!
             throwError(FILE_LIMIT_EXCEEDED);
-            return "";
         }
         else if(fileSize == -1) {
             Serial.println("File not found"); //DEBUG!
             throwError(SD_FILE_NOT_FOUND);
-            return "";
         }
         else if(fileSize == -2) {
             Serial.println("File not open"); //DEBUG!
             throwError(SD_ACCESS_FAIL);
-            return "";
         }
 
         else {
@@ -259,6 +256,7 @@ std::string KestrelFileHandler::readFromSD(String path)
                 }
             }
         }
+        sdFile.sync(); //Sync to SD card to make sure data is written
         sdFile.close(); //Regardless of access, close file when done 
         }
     }
@@ -279,9 +277,9 @@ bool KestrelFileHandler::removeFileFromSD(String path) {
         WITH_LOCK(SPI){
             if (!sd.begin(chipSelect, SD_SCK_MHZ(20))) { //Initialize SD card, assume power has been cycled since last time
                 logger.enableSD(false);
-                delay(100);
+                delay(300);
                 logger.enableSD(true);
-                delay(100);
+                delay(300);
                 if(!sd.begin(chipSelect, SD_SCK_MHZ(10))) {
                     Serial.println("SD Fail on retry"); //DEBUG!
                     throwError(SD_INIT_FAIL | 0x100);
@@ -579,9 +577,9 @@ bool KestrelFileHandler::dumpFRAM()
         WITH_LOCK(SPI){
             if (!sd.begin(chipSelect, SD_SCK_MHZ(20))) { //Initialize SD card, assume power has been cycled since last time
                 logger.enableSD(false);
-                delay(100);
+                delay(300);
                 logger.enableSD(true);
-                delay(100);
+                delay(300);
                 if(!sd.begin(chipSelect, SD_SCK_MHZ(10))) {
                     Serial.println("SD Fail on retry"); //DEBUG!
                     throwError(SD_INIT_FAIL | 0x100);
@@ -670,6 +668,7 @@ bool KestrelFileHandler::dumpFRAM()
                 sdFile.write(temp.data, temp.dataLen); //Append data to end
                 sdFile.write('\n'); //Place newline at end of each entry
                 sentLocal = true;
+                sdFile.sync(); //Sync to SD card to make sure data is written
             }
             sdFile.close(); //Regardless of access, close file when done     
         }
@@ -787,9 +786,9 @@ bool KestrelFileHandler::dumpToSD() //In case of FRAM filling up, dumps all entr
             //FIX! Write error to EEPROM cause we can't seem to work with SD card or telemetry...
             
             logger.enableSD(false);
-            delay(100);
+            delay(300);
             logger.enableSD(true);
-            delay(100);
+            delay(300);
             if(!sd.begin(chipSelect, SD_SCK_MHZ(10))) {
                 Serial.println("SD Fail on retry"); //DEBUG!
                 // sd.initErrorHalt(); //DEBUG!??
@@ -929,6 +928,7 @@ bool KestrelFileHandler::dumpToSD() //In case of FRAM filling up, dumps all entr
                         sdFile.print('\t'); //Tab deliniate data
                         sdFile.write(temp.data, temp.dataLen); //Write out data
                         sdFile.write('\n'); //Place newline at end of each entry
+                        sdFile.sync(); //Sync to SD card to make sure data is written
                     // }
                 }
                 sdFile.close(); //Regardless of access, close file when done
@@ -972,9 +972,9 @@ bool KestrelFileHandler::backhaulUnsentLogs()
                 //FIX! Write error to EEPROM cause we can't seem to work with SD card or telemetry...
                 // sd.initErrorHalt(); //DEBUG!??
                 logger.enableSD(false);
-                delay(100);
+                delay(300);
                 logger.enableSD(true);
-                delay(100);
+                delay(300);
                 if(!sd.begin(chipSelect, SD_SCK_MHZ(10))) {
                     Serial.println("SD Fail on retry"); //DEBUG!
                     // sd.initErrorHalt(); //DEBUG!??
@@ -1162,6 +1162,8 @@ bool KestrelFileHandler::backhaulUnsentLogs()
             // }
         } 
 
+            sdFile.sync(); //Sync to SD card to make sure data is written
+            tempFile.sync(); //Sync to SD card to make sure data is written
             sdFile.close(); //Regardless of access, close file when done     
             tempFile.close();
             if(sent) {
